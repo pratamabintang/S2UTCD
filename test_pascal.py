@@ -32,6 +32,7 @@ def parse_args():
     parser.add_argument('--n_episodes', type=int, default=1000)
     parser.add_argument('--img_size', type=int, default=512)
     parser.add_argument('--reduce_dim', type=int, default=64)
+    parser.add_argument('--attn_max_tokens', type=int, default=4096)
     parser.add_argument('--sam2_ckpt', default=None)
     parser.add_argument('--amp', type=int, default=1)
     parser.add_argument('--amp_dtype', default='fp16', choices=['fp16', 'bf16'],
@@ -55,7 +56,8 @@ def main():
         shot=args.shot, bsz=args.bsz, nworker=args.nworker, benchmark=args.benchmark,
     )
 
-    model = FewShotSeg(pretrained_weights=args.sam2_ckpt, reduce_dim=args.reduce_dim)
+    model = FewShotSeg(pretrained_weights=args.sam2_ckpt, reduce_dim=args.reduce_dim,
+                       attn_max_tokens=args.attn_max_tokens)
     state = torch.load(args.load, map_location='cpu')
     model.load_state_dict(state)
     model.to(device)

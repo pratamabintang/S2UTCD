@@ -29,9 +29,10 @@ NWORKER="${NWORKER:-4}"
 LR="${LR:-1e-3}"
 ADAPTER_LR="${ADAPTER_LR:-1e-4}"
 REDUCE_DIM="${REDUCE_DIM:-64}"
+ATTN_MAX_TOKENS="${ATTN_MAX_TOKENS:-4096}"
 IMG_SIZE="${IMG_SIZE:-512}"
 AMP="${AMP:-1}"
-AMP_DTYPE="${AMP_DTYPE:-fp16}"
+AMP_DTYPE="${AMP_DTYPE:-bf16}"
 VISUALIZE="${VISUALIZE:-}"
 SAM2_CKPT="${SAM2_CKPT:-$ROOT/pretrained/sam2_hiera_large.pt}"
 
@@ -77,6 +78,7 @@ python train_pascal.py \
   --niter "$NITER" \
   --nworker "$NWORKER" \
   --reduce_dim "$REDUCE_DIM" \
+  --attn_max_tokens "$ATTN_MAX_TOKENS" \
   --img_size "$IMG_SIZE" \
   --fold "$FOLD" \
   --shot "$SHOT" \
@@ -92,6 +94,7 @@ python test_pascal.py \
   --bsz 1 \
   --nworker 0 \
   --reduce_dim "$REDUCE_DIM" \
+  --attn_max_tokens "$ATTN_MAX_TOKENS" \
   --img_size "$IMG_SIZE" \
   --fold "$FOLD" \
   --shot "$SHOT" \

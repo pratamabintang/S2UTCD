@@ -54,13 +54,21 @@ class EnhancedDecoder(nn.Module):
 
 
 class CrossAttention2D(nn.Module):
-    """Cross-attention from segmentation features to reconstruction features."""
+    """Cross-attention from segmentation features to reconstruction features.
 
-    def __init__(self, seg_channels, rec_channels, num_heads=8):
+    The attention grid is capped at ``max_tokens`` spatial positions (default
+    4096 = 64x64). Level-1 features at 512px are 128x128 = 16384 tokens, whose
+    dense (B, heads, N, N) score tensor alone costs ~8 GiB in bf16; capping the
+    grid keeps memory bounded. ``F.scaled_dot_product_attention`` avoids
+    materialising the full score matrix in the first place.
+    """
+
+    def __init__(self, seg_channels, rec_channels, num_heads=8, max_tokens=4096):
         super().__init__()
         assert seg_channels % num_heads == 0
         self.num_heads = num_heads
         self.head_dim = seg_channels // num_heads
+        self.max_tokens = max_tokens
         self.q_proj = nn.Conv2d(seg_channels, seg_channels, kernel_size=1, bias=False)
         self.k_proj = nn.Conv2d(rec_channels, seg_channels, kernel_size=1, bias=False)
         self.v_proj = nn.Conv2d(rec_channels, seg_channels, kernel_size=1, bias=False)
@@ -72,28 +80,40 @@ class CrossAttention2D(nn.Module):
         if rec_feat.shape[-2:] != (h, w):
             rec_feat = F.interpolate(rec_feat, size=(h, w), mode='bilinear', align_corners=True)
 
-        q = self.q_proj(seg_feat).flatten(2).transpose(1, 2)
-        k = self.k_proj(rec_feat).flatten(2).transpose(1, 2)
-        v = self.v_proj(rec_feat).flatten(2).transpose(1, 2)
+        attn_h, attn_w = h, w
+        if self.max_tokens is not None and h * w > self.max_tokens:
+            factor = math.ceil(math.sqrt((h * w) / self.max_tokens))
+            attn_h, attn_w = max(1, h // factor), max(1, w // factor)
+            seg_attn = F.interpolate(seg_feat, size=(attn_h, attn_w), mode='bilinear', align_corners=False)
+            rec_attn = F.interpolate(rec_feat, size=(attn_h, attn_w), mode='bilinear', align_corners=False)
+        else:
+            seg_attn, rec_attn = seg_feat, rec_feat
 
-        q = q.view(b, h * w, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(b, h * w, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(b, h * w, self.num_heads, self.head_dim).transpose(1, 2)
+        n = attn_h * attn_w
+        q = self.q_proj(seg_attn).flatten(2).transpose(1, 2)
+        k = self.k_proj(rec_attn).flatten(2).transpose(1, 2)
+        v = self.v_proj(rec_attn).flatten(2).transpose(1, 2)
 
-        attn = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        attn = torch.softmax(attn, dim=-1)
-        z = torch.matmul(attn, v)
-        z = z.transpose(1, 2).contiguous().view(b, h * w, c)
-        z = z.transpose(1, 2).contiguous().view(b, c, h, w)
+        q = q.view(b, n, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(b, n, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(b, n, self.num_heads, self.head_dim).transpose(1, 2)
+
+        z = F.scaled_dot_product_attention(q, k, v)
+        z = z.transpose(1, 2).contiguous().view(b, n, c)
+        z = z.transpose(1, 2).contiguous().view(b, c, attn_h, attn_w)
+
+        if (attn_h, attn_w) != (h, w):
+            z = F.interpolate(z, size=(h, w), mode='bilinear', align_corners=True)
         return self.out_proj(z)
 
 
 class UCI(nn.Module):
     """Uncertainty-gated cross-attention injection module."""
 
-    def __init__(self, seg_channels, rec_channels, num_heads=8, kernel_size=5):
+    def __init__(self, seg_channels, rec_channels, num_heads=8, kernel_size=5, max_tokens=4096):
         super().__init__()
-        self.cross_attn = CrossAttention2D(seg_channels, rec_channels, num_heads=num_heads)
+        self.cross_attn = CrossAttention2D(seg_channels, rec_channels, num_heads=num_heads,
+                                           max_tokens=max_tokens)
         self.gate_conv = nn.Conv2d(3, 1, kernel_size=1, bias=True)
         self.align = nn.Conv2d(seg_channels, seg_channels, kernel_size=1, bias=False)
         self.kernel_size = kernel_size

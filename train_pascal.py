@@ -32,6 +32,8 @@ def parse_args():
     parser.add_argument('--nworker', type=int, default=4)
     parser.add_argument('--img_size', type=int, default=512)
     parser.add_argument('--reduce_dim', type=int, default=64)
+    parser.add_argument('--attn_max_tokens', type=int, default=4096,
+                        help='cap on spatial tokens inside UCI cross-attention (lower = less VRAM)')
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--adapter_lr', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=5e-4)
@@ -86,7 +88,8 @@ def main():
     logger.info(f'train episodes: {len(loader.dataset)} | iterations: {args.niter}')
     logger.info(f'amp: {use_amp} dtype: {str(amp_dtype).split(".")[-1]} grad_scaler: {scaler_enabled}')
 
-    model = FewShotSeg(pretrained_weights=args.sam2_ckpt, reduce_dim=args.reduce_dim).to(device)
+    model = FewShotSeg(pretrained_weights=args.sam2_ckpt, reduce_dim=args.reduce_dim,
+                       attn_max_tokens=args.attn_max_tokens).to(device)
     model.train()
     optimizer = build_optimizer(model, args)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(args.niter, 1))

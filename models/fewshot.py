@@ -10,7 +10,7 @@ from .deconder import EnhancedDecoder, UCI
 class FewShotSeg(nn.Module):
     """Few-shot segmentation network with FEBR, DDCS, CDCF, and UCI."""
 
-    def __init__(self, pretrained_weights=None, reduce_dim=256):
+    def __init__(self, pretrained_weights=None, reduce_dim=256, attn_max_tokens=4096):
         super().__init__()
         self.encoder = SAMEncoder(pretrained_weights=pretrained_weights)
         # per-level encoder channel widths, SAM2: [144, 288, 576, 1152]
@@ -27,9 +27,12 @@ class FewShotSeg(nn.Module):
         self.febr2 = FEBR(dim=reduce_dim, num_heads=8, bias=False, LayerNorm_type='WithBias')
         self.febr3 = FEBR(dim=reduce_dim, num_heads=8, bias=False, LayerNorm_type='WithBias')
 
-        self.uci1 = UCI(seg_channels=reduce_dim, rec_channels=self.enc_channels[0], num_heads=8)
-        self.uci2 = UCI(seg_channels=reduce_dim, rec_channels=self.enc_channels[1], num_heads=8)
-        self.uci3 = UCI(seg_channels=reduce_dim, rec_channels=self.enc_channels[2], num_heads=8)
+        self.uci1 = UCI(seg_channels=reduce_dim, rec_channels=self.enc_channels[0], num_heads=8,
+                        max_tokens=attn_max_tokens)
+        self.uci2 = UCI(seg_channels=reduce_dim, rec_channels=self.enc_channels[1], num_heads=8,
+                        max_tokens=attn_max_tokens)
+        self.uci3 = UCI(seg_channels=reduce_dim, rec_channels=self.enc_channels[2], num_heads=8,
+                        max_tokens=attn_max_tokens)
 
         self.reduceconv4 = nn.Conv2d(self.enc_channels[3], reduce_dim, kernel_size=1, stride=1, bias=False)
         self.reduceconv3 = nn.Conv2d(self.enc_channels[2], reduce_dim, kernel_size=1, stride=1, bias=False)
