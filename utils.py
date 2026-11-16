@@ -2,10 +2,7 @@
 import random
 import torch
 import numpy as np
-import operator
-import os
 import logging
-import cv2
 def fix_randseed(seed):
     r""" Set random seeds for reproducibility """
     if seed is None:
@@ -120,7 +117,7 @@ class Scores():
 def set_logger(path):
     logger = logging.getLogger()
     logger.handlers = []
-    formatter = logging.Formatter('[%(levelname)] - %(name)s - %(message)s')
+    formatter = logging.Formatter('[%(levelname)s] - %(name)s - %(message)s')
     logger.setLevel("INFO")
 
     # log to .txt

@@ -11,7 +11,8 @@ class EnhancedDecoder(nn.Module):
     def __init__(self, input_sizes=[256, 512, 1024, 2048], output_channels=1):
         super().__init__()
         self.feature_adapters = nn.ModuleList([
-            self._build_adapter(in_c, 256) for in_c in input_sizes
+            self._build_adapter(in_c, 256, deepest=(i == len(input_sizes) - 1))
+            for i, in_c in enumerate(input_sizes)
         ])
         self.fusion_logits = nn.Parameter(torch.zeros(len(input_sizes)))
         self.fusion = nn.Conv2d(256, 256, kernel_size=1, stride=1, bias=False)
@@ -24,14 +25,14 @@ class EnhancedDecoder(nn.Module):
             nn.Sigmoid()
         )
 
-    def _build_adapter(self, in_c, out_c):
+    def _build_adapter(self, in_c, out_c, deepest=False):
         """Build the ODConv-based adapter for one encoder level."""
         layers = [
             ODConv2d(in_c, out_c, 3, padding=1, kernel_num=2),
             nn.BatchNorm2d(out_c),
             nn.GELU()
         ]
-        if in_c == 2048:
+        if deepest:
             layers.append(nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True))
             layers.append(ODConv2d(out_c, out_c, 3, padding=1, kernel_num=2))
             layers.append(nn.BatchNorm2d(out_c))

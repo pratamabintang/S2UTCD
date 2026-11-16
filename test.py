@@ -5,9 +5,7 @@ For evaluation
 import os
 os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 import shutil
-import SimpleITK as sitk
 import torch.backends.cudnn as cudnn
-import torch.optim
 from torch.utils.data import DataLoader
 from models.fewshot import FewShotSeg
 from dataloaders.datasets import TestDataset
@@ -48,7 +46,7 @@ def main(_run, _config, _log):
     torch.set_num_threads(1)
 
     _log.info(f'Create model...')
-    model = FewShotSeg()
+    model = FewShotSeg(pretrained_weights=_config['sam_checkpoint'])
     model.cuda()
     model.load_state_dict(torch.load(_config['reload_model_path'], map_location='cpu'))
 

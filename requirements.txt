@@ -1,0 +1,13 @@
+# torch / torchvision are installed separately (Colab already ships them):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+numpy
+scipy
+Pillow
+sacred
+SimpleITK
+opencv-python-headless
+matplotlib
+einops
+hydra-core
+omegaconf
+tqdm

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .encoder import Res101Encoder
+from .encoder import SAMEncoder
 from .decoder_p import FEBR
 from .deconder import EnhancedDecoder, UCI
 
@@ -10,36 +10,37 @@ from .deconder import EnhancedDecoder, UCI
 class FewShotSeg(nn.Module):
     """Few-shot segmentation network with FEBR, DDCS, CDCF, and UCI."""
 
-    def __init__(self, pretrained_weights="deeplabv3"):
+    def __init__(self, pretrained_weights=None, reduce_dim=256):
         super().__init__()
-        self.encoder = Res101Encoder(
-            replace_stride_with_dilation=[True, True, False],
-            pretrained_weights=pretrained_weights,
-        )
+        self.encoder = SAMEncoder(pretrained_weights=pretrained_weights)
+        # per-level encoder channel widths, SAM2: [144, 288, 576, 1152]
+        self.enc_channels = list(self.encoder.out_channels)
+        self.dim = reduce_dim
+
         self.scaler = 20.0
         self.device = torch.device('cuda')
         self.criterion = nn.NLLLoss()
 
-        self.decoder1 = EnhancedDecoder()
+        self.decoder1 = EnhancedDecoder(input_sizes=self.enc_channels)
 
-        self.febr1 = FEBR(dim=256, num_heads=8, bias=False, LayerNorm_type='WithBias')
-        self.febr2 = FEBR(dim=256, num_heads=8, bias=False, LayerNorm_type='WithBias')
-        self.febr3 = FEBR(dim=256, num_heads=8, bias=False, LayerNorm_type='WithBias')
+        self.febr1 = FEBR(dim=reduce_dim, num_heads=8, bias=False, LayerNorm_type='WithBias')
+        self.febr2 = FEBR(dim=reduce_dim, num_heads=8, bias=False, LayerNorm_type='WithBias')
+        self.febr3 = FEBR(dim=reduce_dim, num_heads=8, bias=False, LayerNorm_type='WithBias')
 
-        self.uci1 = UCI(seg_channels=256, rec_channels=256, num_heads=8)
-        self.uci2 = UCI(seg_channels=256, rec_channels=512, num_heads=8)
-        self.uci3 = UCI(seg_channels=256, rec_channels=1024, num_heads=8)
+        self.uci1 = UCI(seg_channels=reduce_dim, rec_channels=self.enc_channels[0], num_heads=8)
+        self.uci2 = UCI(seg_channels=reduce_dim, rec_channels=self.enc_channels[1], num_heads=8)
+        self.uci3 = UCI(seg_channels=reduce_dim, rec_channels=self.enc_channels[2], num_heads=8)
 
-        self.reduceconv4 = nn.Conv2d(2048, 256, kernel_size=1, stride=1, bias=False)
-        self.reduceconv3 = nn.Conv2d(1024, 256, kernel_size=1, stride=1, bias=False)
-        self.reduceconv2 = nn.Conv2d(512, 256, kernel_size=1, stride=1, bias=False)
-        self.reduceconv1 = nn.Conv2d(256, 256, kernel_size=1, stride=1, bias=False)
+        self.reduceconv4 = nn.Conv2d(self.enc_channels[3], reduce_dim, kernel_size=1, stride=1, bias=False)
+        self.reduceconv3 = nn.Conv2d(self.enc_channels[2], reduce_dim, kernel_size=1, stride=1, bias=False)
+        self.reduceconv2 = nn.Conv2d(self.enc_channels[1], reduce_dim, kernel_size=1, stride=1, bias=False)
+        self.reduceconv1 = nn.Conv2d(self.enc_channels[0], reduce_dim, kernel_size=1, stride=1, bias=False)
 
-        self.conv1 = nn.Conv2d(768, 256, kernel_size=1)
-        self.conv2 = nn.Conv2d(256, 1, kernel_size=1)
+        self.conv1 = nn.Conv2d(3 * reduce_dim, reduce_dim, kernel_size=1)
+        self.conv2 = nn.Conv2d(reduce_dim, 1, kernel_size=1)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, supp_imgs, supp_mask, qry_imgs, train=False):
+    def forward(self, supp_imgs, supp_mask, qry_imgs, train=False, return_all_stages=False):
         """Run episodic training or inference for one-way few-shot segmentation."""
         self.n_ways = len(supp_imgs)
         self.n_shots = len(supp_imgs[0])
@@ -103,11 +104,11 @@ class FewShotSeg(nn.Module):
             align_loss += align_loss_epi
 
         qry_fts = layer3_fts[1:2]
+        prev_pred = self.matchResolution(qry_pred_1, qry_fts)
         if train and rec_fts is not None:
-            qry_fts = self.uci3(qry_fts, rec_fts["layer3"], qry_pred_1.detach())
-        mask_prob_detached = qry_pred_1.detach()
-        bd_mask, _ = self.make_boundary_mask(mask_prob_detached)
-        qry_fts3 = self.febr3(qry_fts, mask_prob_detached, bd_mask)
+            qry_fts = self.uci3(qry_fts, rec_fts["layer3"], prev_pred.detach())
+        bd_mask, _ = self.make_boundary_mask(prev_pred.detach())
+        qry_fts3 = self.febr3(qry_fts, prev_pred.detach(), bd_mask)
 
         _, _, h, w = qry_fts3.shape
         b_expanded = bg_prototypes_3[0].unsqueeze(-1).unsqueeze(-1).expand(-1, -1, h, w)
@@ -115,18 +116,18 @@ class FewShotSeg(nn.Module):
         combined = torch.cat([qry_fts3, b_expanded, f_expanded], dim=1)
         x = self.conv1(combined)
         x = self.conv2(x)
-        qry_pred_2 = self.sigmoid(x) + qry_pred_1
+        qry_pred_2 = self.sigmoid(x) + prev_pred
 
         qry_pred_up = F.interpolate(qry_pred_2, size=img_size, mode='bilinear', align_corners=True)
         preds = torch.cat((1.0 - qry_pred_up, qry_pred_up), dim=1)
         outputs.append(preds)
 
         qry_fts = layer2_fts[1:2]
+        prev_pred = self.matchResolution(qry_pred_2, qry_fts)
         if train and rec_fts is not None:
-            qry_fts = self.uci2(qry_fts, rec_fts["layer2"], qry_pred_2.detach())
-        mask_prob_detached = qry_pred_2.detach()
-        bd_mask, _ = self.make_boundary_mask(mask_prob_detached)
-        qry_fts2 = self.febr2(qry_fts, mask_prob_detached, bd_mask)
+            qry_fts = self.uci2(qry_fts, rec_fts["layer2"], prev_pred.detach())
+        bd_mask, _ = self.make_boundary_mask(prev_pred.detach())
+        qry_fts2 = self.febr2(qry_fts, prev_pred.detach(), bd_mask)
 
         _, _, h, w = qry_fts2.shape
         b_expanded = bg_prototypes_2[0].unsqueeze(-1).unsqueeze(-1).expand(-1, -1, h, w)
@@ -134,18 +135,18 @@ class FewShotSeg(nn.Module):
         combined = torch.cat([qry_fts2, b_expanded, f_expanded], dim=1)
         x = self.conv1(combined)
         x = self.conv2(x)
-        qry_pred_3 = self.sigmoid(x) + qry_pred_2
+        qry_pred_3 = self.sigmoid(x) + prev_pred
 
         qry_pred_up = F.interpolate(qry_pred_3, size=img_size, mode='bilinear', align_corners=True)
         preds = torch.cat((1.0 - qry_pred_up, qry_pred_up), dim=1)
         outputs.append(preds)
 
         qry_fts = layer1_fts[1:2]
+        prev_pred = self.matchResolution(qry_pred_3, qry_fts)
         if train and rec_fts is not None:
-            qry_fts = self.uci1(qry_fts, rec_fts["layer1"], qry_pred_3.detach())
-        mask_prob_detached = qry_pred_3.detach()
-        bd_mask, _ = self.make_boundary_mask(mask_prob_detached)
-        qry_fts1 = self.febr1(qry_fts, mask_prob_detached, bd_mask)
+            qry_fts = self.uci1(qry_fts, rec_fts["layer1"], prev_pred.detach())
+        bd_mask, _ = self.make_boundary_mask(prev_pred.detach())
+        qry_fts1 = self.febr1(qry_fts, prev_pred.detach(), bd_mask)
 
         _, _, h, w = qry_fts1.shape
         b_expanded = bg_prototypes_1[0].unsqueeze(-1).unsqueeze(-1).expand(-1, -1, h, w)
@@ -153,7 +154,7 @@ class FewShotSeg(nn.Module):
         combined = torch.cat([qry_fts1, b_expanded, f_expanded], dim=1)
         x = self.conv1(combined)
         x = self.conv2(x)
-        qry_pred_4 = self.sigmoid(x) + qry_pred_3
+        qry_pred_4 = self.sigmoid(x) + prev_pred
 
         qry_pred_up = F.interpolate(qry_pred_4, size=img_size, mode='bilinear', align_corners=True)
         preds = torch.cat((1.0 - qry_pred_up, qry_pred_up), dim=1)
@@ -162,9 +163,15 @@ class FewShotSeg(nn.Module):
         output = torch.stack(outputs, dim=1)
         output = output.view(-1, *output.shape[2:])
 
-        if train:
+        if train or return_all_stages:
             return output, qry_fts_out, align_loss / supp_bs
         return output[0].unsqueeze(0), qry_fts_out, align_loss / supp_bs
+
+    def matchResolution(self, prob, fts):
+        """Resize a probability map to the spatial size of the target feature level."""
+        if prob.shape[-2:] == fts.shape[-2:]:
+            return prob
+        return F.interpolate(prob, size=fts.shape[-2:], mode='bilinear', align_corners=True)
 
     def make_boundary_mask(self, prob_mask, kernel_size=5, iters=1, use_soft=True):
         """Generate soft boundary and interior masks from the foreground probability map."""

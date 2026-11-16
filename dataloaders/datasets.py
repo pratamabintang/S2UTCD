@@ -158,10 +158,16 @@ class TrainDataset(Dataset):
             self.images = {}
             self.labels = {}
             self.sprvxls = {}
-            for image_dir, label_dir, sprvxl_dir in zip(self.image_dirs, self.label_dirs, self.sprvxl_dirs):
+            dirs = [self.image_dirs, self.label_dirs]
+            if self.sprvxl_dirs:
+                dirs.append(self.sprvxl_dirs)
+            else:
+                assert self.use_gt, 'supervoxels are required when training with use_gt=False'
+            for image_dir, label_dir, *sprvxl_dir in zip(*dirs):
                 self.images[image_dir] = sitk.GetArrayFromImage(sitk.ReadImage(image_dir))
                 self.labels[label_dir] = sitk.GetArrayFromImage(sitk.ReadImage(label_dir))
-                self.sprvxls[sprvxl_dir] = sitk.GetArrayFromImage(sitk.ReadImage(sprvxl_dir))
+                if sprvxl_dir:
+                    self.sprvxls[sprvxl_dir[0]] = sitk.GetArrayFromImage(sitk.ReadImage(sprvxl_dir[0]))
 
     def __len__(self):
         return self.max_iter
@@ -222,12 +228,12 @@ class TrainDataset(Dataset):
             # get image/supervoxel volume from dictionary
             img = self.images[self.image_dirs[pat_idx]]
             gt = self.labels[self.label_dirs[pat_idx]]
-            sprvxl = self.sprvxls[self.sprvxl_dirs[pat_idx]]
+            sprvxl = self.sprvxls[self.sprvxl_dirs[pat_idx]] if self.sprvxl_dirs else None
         else:
             # read image/supervoxel volume into memory
             img = sitk.GetArrayFromImage(sitk.ReadImage(self.image_dirs[pat_idx]))
             gt = sitk.GetArrayFromImage(sitk.ReadImage(self.label_dirs[pat_idx]))
-            sprvxl = sitk.GetArrayFromImage(sitk.ReadImage(self.sprvxl_dirs[pat_idx]))
+            sprvxl = sitk.GetArrayFromImage(sitk.ReadImage(self.sprvxl_dirs[pat_idx])) if self.sprvxl_dirs else None
 
         if self.exclude_label is not None:  # identify the slices containing test labels
             idx = np.arange(gt.shape[0])

@@ -44,7 +44,7 @@ def main(_run, _config, _log):
     torch.set_num_threads(1)
 
     _log.info('Create model...')
-    model = FewShotSeg().cuda()
+    model = FewShotSeg(pretrained_weights=_config['sam_checkpoint']).cuda()
     model.train()
 
     _log.info('Set optimizer...')

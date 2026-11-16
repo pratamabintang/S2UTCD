@@ -64,6 +64,7 @@ def cfg():
     max_iters_per_load = 1000  # epoch size, interval for reloading the dataset
     # Network
     reload_model_path = None
+    sam_checkpoint = None  # path to the SAM2 trunk checkpoint (e.g. sam2_hiera_large.pt), None = random init
     Setting1 = False
     optim_type = 'sgd'
     optim = {
