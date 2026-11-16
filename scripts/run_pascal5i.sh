@@ -31,6 +31,7 @@ ADAPTER_LR="${ADAPTER_LR:-1e-4}"
 REDUCE_DIM="${REDUCE_DIM:-64}"
 IMG_SIZE="${IMG_SIZE:-512}"
 AMP="${AMP:-1}"
+AMP_DTYPE="${AMP_DTYPE:-fp16}"
 VISUALIZE="${VISUALIZE:-}"
 SAM2_CKPT="${SAM2_CKPT:-$ROOT/pretrained/sam2_hiera_large.pt}"
 
@@ -80,7 +81,8 @@ python train_pascal.py \
   --fold "$FOLD" \
   --shot "$SHOT" \
   --sam2_ckpt "$SAM2_CKPT" \
-  --amp "$AMP"
+  --amp "$AMP" \
+  --amp_dtype "$AMP_DTYPE"
 
 echo "[7/7] test"
 python test_pascal.py \
@@ -95,6 +97,7 @@ python test_pascal.py \
   --shot "$SHOT" \
   --sam2_ckpt "$SAM2_CKPT" \
   --visualize "$VISUALIZE" \
-  --amp "$AMP"
+  --amp "$AMP" \
+  --amp_dtype "$AMP_DTYPE"
 
 echo "done: logs/${LOGPATH}.log"

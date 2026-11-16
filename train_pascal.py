@@ -14,6 +14,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from amp_utils import resolve_amp
 from dataloaders.pascal5i import build_loader, to_device
 from models.fewshot import FewShotSeg
 from utils import set_logger
@@ -37,6 +38,8 @@ def parse_args():
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--sam2_ckpt', default=None, help='path to sam2_hiera_*.pt')
     parser.add_argument('--amp', type=int, default=1)
+    parser.add_argument('--amp_dtype', default='fp16', choices=['fp16', 'bf16'],
+                        help='autocast dtype; bf16 needs Ampere+ (A100/L4/3090), T4 falls back to fp16')
     parser.add_argument('--seed', type=int, default=2025)
     parser.add_argument('--print_every', type=int, default=100)
     parser.add_argument('--save_every', type=int, default=2000)
@@ -67,7 +70,7 @@ def main():
     np.random.seed(args.seed)
     torch.backends.cudnn.benchmark = True
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    use_amp = bool(args.amp) and device.type == 'cuda'
+    use_amp, amp_dtype, scaler_enabled = resolve_amp(args.amp, args.amp_dtype, device)
     if device.type != 'cuda':
         print('WARNING: CUDA not found, running on CPU (very slow, for smoke tests only)')
 
@@ -81,12 +84,13 @@ def main():
         shot=args.shot, bsz=args.bsz, nworker=args.nworker, benchmark=args.benchmark,
     )
     logger.info(f'train episodes: {len(loader.dataset)} | iterations: {args.niter}')
+    logger.info(f'amp: {use_amp} dtype: {str(amp_dtype).split(".")[-1]} grad_scaler: {scaler_enabled}')
 
     model = FewShotSeg(pretrained_weights=args.sam2_ckpt, reduce_dim=args.reduce_dim).to(device)
     model.train()
     optimizer = build_optimizer(model, args)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(args.niter, 1))
-    scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
+    scaler = torch.amp.GradScaler(device.type, enabled=scaler_enabled)
 
     it = iter(loader)
     running = {'total': 0.0, 'seg': 0.0, 'rec': 0.0, 'align': 0.0}
@@ -117,7 +121,7 @@ def main():
         remove_mask = target
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             query_pred, rec_out, align_loss = model(
                 batch['support_images'], batch['support_masks'], query_images, train=True
             )

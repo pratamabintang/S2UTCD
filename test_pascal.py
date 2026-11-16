@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from amp_utils import resolve_amp
 from dataloaders.pascal5i import (
     build_loader, class_iou, denormalize, fold_class_ids, mean_iou_summary, to_device,
 )
@@ -33,6 +34,8 @@ def parse_args():
     parser.add_argument('--reduce_dim', type=int, default=64)
     parser.add_argument('--sam2_ckpt', default=None)
     parser.add_argument('--amp', type=int, default=1)
+    parser.add_argument('--amp_dtype', default='fp16', choices=['fp16', 'bf16'],
+                        help='autocast dtype; bf16 needs Ampere+, older GPUs fall back to fp16')
     parser.add_argument('--visualize', default=None, help='dir to dump prediction panels')
     parser.add_argument('--vis_n', type=int, default=16)
     return parser.parse_args()
@@ -42,10 +45,10 @@ def parse_args():
 def main():
     args = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    use_amp = bool(args.amp) and device.type == 'cuda'
     os.makedirs('logs', exist_ok=True)
     logger = set_logger(os.path.join('logs', 'test_pascal.log'))
     logger.info(f'args: {vars(args)}')
+    use_amp, amp_dtype, _ = resolve_amp(args.amp, args.amp_dtype, device, logger)
 
     loader = build_loader(
         args.datapath, fold=args.fold, img_size=args.img_size, split='val',
@@ -70,7 +73,7 @@ def main():
         batch = to_device(raw, device)
         query_img = batch['query_images'][0]
 
-        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             pred, _, _ = model(
                 batch['support_images'], batch['support_masks'],
                 [query_img], train=False, return_all_stages=True,
