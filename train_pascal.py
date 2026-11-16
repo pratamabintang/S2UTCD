@@ -64,9 +64,15 @@ def build_optimizer(model, args):
 
 
 def masked_bce(fg_prob, target, weight, eps=1e-6):
-    prob = fg_prob.clamp(eps, 1.0 - eps)
-    loss = F.binary_cross_entropy(prob, target, reduction='none')
-    return (loss * weight).sum() / (weight.sum() + eps)
+    """Masked BCE computed in fp32 without ``F.binary_cross_entropy``.
+
+    The built-in BCE refuses autocast inputs; the manual stable form works under
+    fp16/bf16 autocast and keeps the reduction in fp32.
+    """
+    prob = fg_prob.float().clamp(eps, 1.0 - eps)
+    target = target.float()
+    loss = -(target * prob.log() + (1.0 - target) * (1.0 - prob).log())
+    return (loss * weight.float()).sum() / (weight.float().sum() + eps)
 
 
 def main():
