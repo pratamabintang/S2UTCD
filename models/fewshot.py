@@ -52,6 +52,11 @@ class FewShotSeg(nn.Module):
         assert self.n_queries == 1
 
         supp_bs = supp_imgs[0][0].shape[0]
+        if supp_bs != 1:
+            raise ValueError(
+                'FewShotSeg processes exactly one episode per forward pass '
+                f'(got batch size {supp_bs}); use gradient accumulation instead of batching episodes.'
+            )
         img_size = supp_imgs[0][0].shape[-2:]
         supp_mask = torch.stack([torch.stack(way, dim=0) for way in supp_mask], dim=0)
         supp_mask = supp_mask.view(supp_bs, self.n_ways, self.n_shots, *img_size)

@@ -27,7 +27,10 @@ def parse_args():
     parser.add_argument('--logpath', required=True, help='run name; checkpoints go to logs/<logpath>.log/')
     parser.add_argument('--fold', type=int, default=0, choices=[0, 1, 2, 3])
     parser.add_argument('--shot', type=int, default=1)
-    parser.add_argument('--bsz', type=int, default=4)
+    parser.add_argument('--bsz', type=int, default=1,
+                        help='episodes per forward; only 1 is supported (use --grad_accum)')
+    parser.add_argument('--grad_accum', type=int, default=1,
+                        help='episodes accumulated per optimizer step (emulates larger batch)')
     parser.add_argument('--niter', type=int, default=20000)
     parser.add_argument('--nworker', type=int, default=4)
     parser.add_argument('--img_size', type=int, default=512)
@@ -81,9 +84,13 @@ def main():
     logger = set_logger(os.path.join(run_dir, 'logger.log'))
     logger.info(f'args: {vars(args)}')
 
+    if args.bsz != 1:
+        logger.warning(f'--bsz {args.bsz} ignored: FewShotSeg is episodic (1 support / 1 query per '
+                       f'forward). Set --grad_accum {args.bsz} for an equivalent effective batch.')
+
     loader = build_loader(
         args.datapath, fold=args.fold, img_size=args.img_size, split='trn',
-        shot=args.shot, bsz=args.bsz, nworker=args.nworker, benchmark=args.benchmark,
+        shot=args.shot, bsz=1, nworker=args.nworker, benchmark=args.benchmark,
     )
     logger.info(f'train episodes: {len(loader.dataset)} | iterations: {args.niter}')
     logger.info(f'amp: {use_amp} dtype: {str(amp_dtype).split(".")[-1]} grad_scaler: {scaler_enabled}')
@@ -92,8 +99,14 @@ def main():
                        attn_max_tokens=args.attn_max_tokens).to(device)
     model.train()
     optimizer = build_optimizer(model, args)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(args.niter, 1))
+    accum = max(1, args.grad_accum)
+    total_updates = max((args.niter + accum - 1) // accum, 1)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_updates)
     scaler = torch.amp.GradScaler(device.type, enabled=scaler_enabled)
+    optimizer.zero_grad(set_to_none=True)
+    if accum > 1:
+        logger.info(f'grad_accum: {accum} episodes per optimizer step '
+                    f'({total_updates} updates for {args.niter} iterations)')
 
     it = iter(loader)
     running = {'total': 0.0, 'seg': 0.0, 'rec': 0.0, 'align': 0.0}
@@ -109,10 +122,9 @@ def main():
         batch = to_device(batch, device)
 
         query_img = batch['query_images'][0]
-        query_labels = batch['query_labels']                       # (bsz, H, W)
-        query_ignore = batch['query_ignores']                      # (bsz, H, W)
-        bsz = query_img.shape[0]
-        target = query_labels.unsqueeze(1)                         # (bsz, 1, H, W)
+        query_labels = batch['query_labels'][:1]                   # (1, H, W)
+        query_ignore = batch['query_ignores'][:1]                  # (1, H, W)
+        target = query_labels.unsqueeze(1)                         # (1, 1, H, W)
         weight = 1.0 - query_ignore.unsqueeze(1)                   # drop boundary / void pixels
 
         # masked query used as the reconstruction target (fg region removed)
@@ -123,26 +135,29 @@ def main():
         query_images = [query_img, masked.repeat(1, 3, 1, 1)]
         remove_mask = target
 
-        optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             query_pred, rec_out, align_loss = model(
                 batch['support_images'], batch['support_masks'], query_images, train=True
             )
-            stages = query_pred.view(bsz, -1, 2, *query_pred.shape[-2:])
+            # one query per forward -> (n_stages, 2, H, W); add back the episode dim
+            stages = query_pred.view(1, -1, 2, *query_pred.shape[-2:])
             seg_loss = sum(
                 masked_bce(stages[:, s, 1:2].float(), target, weight)
                 for s in range(stages.shape[1])
             ) / stages.shape[1]
             rec_err = (masked - rec_out.float()).pow(2).mean(dim=1, keepdim=True)
             rec_loss = (rec_err * remove_mask).sum() / (remove_mask.sum() + 1e-6)
-            loss = seg_loss + rec_loss + align_loss.float()
+            loss_raw = seg_loss + rec_loss + align_loss.float()
+            loss = loss_raw / accum
 
         scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        scheduler.step()
+        if step % accum == 0 or step == args.niter:
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            scheduler.step()
 
-        last_loss = loss.item()
+        last_loss = loss_raw.item()
         running['total'] += last_loss
         running['seg'] += seg_loss.item()
         running['rec'] += rec_loss.item()

@@ -23,7 +23,8 @@ VOC="$DPATH/VOC2012"
 LOGPATH="${LOGPATH:-log_pascal_fold2_1shot}"
 FOLD="${FOLD:-2}"
 SHOT="${SHOT:-1}"
-BSZ="${BSZ:-8}"
+BSZ="${BSZ:-1}"
+GRAD_ACCUM="${GRAD_ACCUM:-1}"
 NITER="${NITER:-20000}"
 NWORKER="${NWORKER:-4}"
 LR="${LR:-1e-3}"
@@ -73,6 +74,7 @@ python train_pascal.py \
   --benchmark pascal \
   --logpath "$LOGPATH" \
   --bsz "$BSZ" \
+  --grad_accum "$GRAD_ACCUM" \
   --lr "$LR" \
   --adapter_lr "$ADAPTER_LR" \
   --niter "$NITER" \

@@ -51,9 +51,12 @@ def main():
     logger.info(f'args: {vars(args)}')
     use_amp, amp_dtype, _ = resolve_amp(args.amp, args.amp_dtype, device, logger)
 
+    if args.bsz != 1:
+        logger.warning(f'--bsz {args.bsz} ignored: evaluation is episodic (1 query per forward)')
+
     loader = build_loader(
         args.datapath, fold=args.fold, img_size=args.img_size, split='val',
-        shot=args.shot, bsz=args.bsz, nworker=args.nworker, benchmark=args.benchmark,
+        shot=args.shot, bsz=1, nworker=args.nworker, benchmark=args.benchmark,
     )
 
     model = FewShotSeg(pretrained_weights=args.sam2_ckpt, reduce_dim=args.reduce_dim,
